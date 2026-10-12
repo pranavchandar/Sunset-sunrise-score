@@ -48,7 +48,10 @@ export function githubStorage({ token, repo, branch = 'sky-data', api = 'https:/
     if (res.status === 404) return null;
     if (!res.ok) {
       const msg = (await res.json().catch(() => ({}))).message || res.statusText;
-      throw Object.assign(new Error(`GitHub ${method} ${url}: ${res.status} ${msg}`), { status: res.status });
+      const hint = res.status === 401 ? ' (GITHUB_TOKEN is invalid or expired)'
+        : res.status === 403 && method !== 'GET' ? ` (the token can read ${repo} but not write to it: give it Repository permissions → Contents → Read and write)`
+        : '';
+      throw Object.assign(new Error(`GitHub ${method} ${url}: ${res.status} ${msg}${hint}`), { status: res.status });
     }
     return accept.endsWith('raw') ? res.text() : res.json();
   }

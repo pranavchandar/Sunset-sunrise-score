@@ -65,6 +65,11 @@ Things to know about the free plan:
 - Never set `GITHUB_BRANCH` to the branch Render deploys from, or every rating would trigger a redeploy. The server refuses to start if it's set to the default branch.
 - Each rating is about 1 KB. Files over 1 MB are read through GitHub's raw API (up to 100 MB). If the file ever grows very large, export it from the admin page and trim old ratings.
 
+If the GitHub token is wrong, the app still runs and shows predictions, but ratings can't be saved yet. The browser keeps them and retries. The Render log and the admin page explain what's wrong:
+
+- **`403 … can read … but not write`**: edit the token on GitHub (Settings → Developer settings → Fine-grained tokens → your token → Repository permissions) and set **Contents** to **Read and write**. The server reconnects by itself within a minute. No redeploy is needed.
+- **`401`**: the token is invalid or expired. Paste a new one into Render's Environment tab; Render restarts the app.
+
 Environment variables:
 
 | Variable | Purpose |
