@@ -674,7 +674,8 @@ async function sendFeedback(payload) {
   try {
     const res = await fetch('api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (res.ok) return true;
-    if (res.status >= 400 && res.status < 500 && res.status !== 429) return false; // rejected: don't queue
+    // 404/405 = no feedback server (e.g. GitHub Pages): keep it in the outbox.
+    if (res.status >= 400 && res.status < 500 && ![404, 405, 429].includes(res.status)) return false; // rejected: don't queue
   } catch { /* offline or static hosting */ }
   const box = store.get('outbox', []).filter((p) => !(p.eventId === payload.eventId && p.clientId === payload.clientId));
   box.push(payload);
@@ -689,7 +690,7 @@ async function flushOutbox() {
   for (const p of box) {
     try {
       const res = await fetch('api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
-      if (!res.ok && (res.status >= 500 || res.status === 429)) left.push(p);
+      if (!res.ok && (res.status >= 500 || [404, 405, 429].includes(res.status))) left.push(p);
     } catch { left.push(p); }
   }
   store.set('outbox', left);
