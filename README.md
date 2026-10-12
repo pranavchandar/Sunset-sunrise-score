@@ -32,18 +32,50 @@ Sky Score predicts how vibrant the next sunrises and sunsets will be. Each event
   - CSV and JSON export, and deleting individual ratings.
   - **Suggested weights** from a ridge regression over the ratings. You can apply them live with one click, or reset them.
 
-## Run it
+## Run it locally
 
 ```bash
 ADMIN_TOKEN=choose-a-long-secret npm start   # http://localhost:3000, admin at /admin
-npm test                                      # scoring, sun/geo, stats and API tests
+npm test                                      # scoring, sun/geo, stats, API and storage tests
 ```
 
 - Node 18 or newer. There are no dependencies.
-- Ratings go to `data/feedback.json` and tuned weights to `data/config.json`. You can change the folder with `DATA_DIR`.
+- Locally, ratings go to `data/feedback.json` and tuned weights to `data/config.json`. You can change the folder with `DATA_DIR`.
 - If `ADMIN_TOKEN` is not set, the server prints a random token at startup.
 
-The `public/` folder also works as a static site (for example, GitHub Pages). Predictions work without the server. Ratings are then kept in the browser's outbox until a server is reachable, and the default weights are used.
+## Deploy for free on Render
+
+The app and its API run as one Node web service on Render's free plan. The free plan's disk is wiped on every restart, so ratings are saved to your GitHub repo instead: a separate `sky-data` branch holds `data/feedback.json` and `data/config.json`, and every rating becomes a commit there.
+
+1. **Make sure the code is on `main`.** Render deploys from the repo's default branch.
+2. **Create a GitHub token.** Go to GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token.
+   - Repository access: **Only select repositories** → this repo.
+   - Permissions: **Contents → Read and write**. Nothing else.
+   - Pick an expiry you're comfortable with. When it expires, ratings stop saving until you paste a new token into Render.
+3. **Create the service.** On [render.com](https://render.com): New → **Blueprint** → connect this repo. Render reads `render.yaml`.
+4. When asked for `GITHUB_TOKEN`, paste the token. Leave the other values as they are.
+5. Deploy. The first start creates the `sky-data` branch.
+6. **Get your admin password.** Open the service's **Environment** tab and copy `ADMIN_TOKEN` (Render generated it). Log in at `https://<your-app>.onrender.com/admin`.
+
+Things to know about the free plan:
+
+- The app sleeps after about 15 minutes without visitors. The next visit takes roughly 30–60 seconds to wake it.
+- Ratings are safe while it sleeps. The server only confirms a rating after GitHub has saved it. If saving fails, the browser keeps the rating and retries later.
+- `/api/health` shows whether storage is `github` or `file`. The admin page shows where ratings are stored.
+- Never set `GITHUB_BRANCH` to the branch Render deploys from, or every rating would trigger a redeploy. The server refuses to start if it's set to the default branch.
+- Each rating is about 1 KB. Files over 1 MB are read through GitHub's raw API (up to 100 MB). If the file ever grows very large, export it from the admin page and trim old ratings.
+
+Environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `ADMIN_TOKEN` | Password for `/admin` |
+| `GITHUB_TOKEN`, `GITHUB_REPO` | Turn on GitHub storage (`owner/name`) |
+| `GITHUB_BRANCH` | Data branch, default `sky-data` |
+| `DATA_DIR` | Folder for file storage when GitHub storage is off |
+| `PORT` | Set by the host |
+
+The `public/` folder still works as a static site (for example, GitHub Pages) if you only want predictions. Ratings then stay in each visitor's browser.
 
 ## How the score works
 
@@ -70,6 +102,8 @@ All weights and thresholds live in `public/js/config.js`. The scorer (`public/js
 
 ```
 server.js              static files + feedback/admin API (no dependencies)
+storage.js             file or GitHub-branch storage for ratings and weights
+render.yaml            Render free-plan blueprint
 public/index.html      app shell
 public/js/app.js       UI
 public/js/data.js      Open-Meteo fetch → scored events

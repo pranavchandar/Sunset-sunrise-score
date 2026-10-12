@@ -52,6 +52,7 @@ async function refresh() {
     const data = await (await api('api/admin/feedback')).json();
     items = data.items.sort((a, b) => b.receivedAt - a.receivedAt);
     tuned = data.config;
+    $('#storageInfo').textContent = data.storage ? `Ratings are stored in ${data.storage}` : '';
     $('#loginForm').hidden = true;
     $('#dash').hidden = false;
     $('#logoutBtn').hidden = false;

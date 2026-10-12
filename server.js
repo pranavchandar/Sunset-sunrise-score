@@ -8,20 +8,24 @@
 //   PUT    /api/admin/config          admin  — save tuned weights
 //   DELETE /api/admin/config          admin  — reset to defaults
 //
+//   GET    /api/health                public — liveness + which storage is in use
+//
 // Admin calls need `Authorization: Bearer $ADMIN_TOKEN`. If ADMIN_TOKEN is not
 // set, a random token is generated and printed at startup.
+//
+// Storage (see storage.js): local files in DATA_DIR by default, or a data branch
+// in a GitHub repo when GITHUB_TOKEN + GITHUB_REPO are set.
 
 import http from 'node:http';
 import { promises as fs, createReadStream } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { storageFromEnv } from './storage.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
-const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
-const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.json');
-const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+const storage = storageFromEnv(process.env, path.join(ROOT, 'data'));
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(18).toString('base64url');
 const MAX_BODY = 32 * 1024;
@@ -42,25 +46,30 @@ const CSP = [
   "base-uri 'none'",
 ].join('; ');
 
-// ---------- storage (in memory, persisted atomically, writes serialized) ----------
+// ---------- state (in memory; every change is persisted before the API answers) ----------
 
 let feedback = [];
 let tunedConfig = null;
-let writeChain = Promise.resolve();
 
 async function load() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  try { feedback = JSON.parse(await fs.readFile(FEEDBACK_FILE, 'utf8')); } catch { feedback = []; }
-  try { tunedConfig = JSON.parse(await fs.readFile(CONFIG_FILE, 'utf8')); } catch { tunedConfig = null; }
+  await storage.init();
+  feedback = (await storage.read('feedback')) || [];
+  tunedConfig = await storage.read('config');
 }
 
-function persist(file, value) {
-  writeChain = writeChain.then(async () => {
-    const tmp = `${file}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(value, null, 1));
-    await fs.rename(tmp, file);
-  }).catch((e) => console.error('write failed', e));
-  return writeChain;
+// Writes run one at a time. A write queued behind another for the same file
+// is merged into it, so a burst of ratings costs one save (one commit on GitHub).
+let writeChain = Promise.resolve();
+const queued = new Map();
+function persist(name, message) {
+  if (queued.has(name)) return queued.get(name);
+  const p = writeChain.then(() => {
+    queued.delete(name);
+    return storage.write(name, name === 'feedback' ? feedback : tunedConfig, message);
+  });
+  queued.set(name, p);
+  writeChain = p.catch((e) => console.error(`save ${name} failed:`, e.message));
+  return p;
 }
 
 // ---------- validation ----------
@@ -205,23 +214,29 @@ async function api(req, res, url) {
       if (feedback.length >= MAX_ITEMS) return send(res, 507, { error: 'Feedback store full' });
       feedback.push(record);
     }
-    await persist(FEEDBACK_FILE, feedback);
+    try {
+      await persist('feedback', `Rating: ${record.type} ${record.rating}★ at ${record.location.name || 'unknown'}`.slice(0, 120));
+    } catch {
+      // Not durable yet: tell the client to keep it and retry (it re-sends; the dedupe makes that safe).
+      return send(res, 503, { error: 'Could not save right now, will retry' });
+    }
     return send(res, existing >= 0 ? 200 : 201, { ok: true, id: record.id, updated: existing >= 0, total: feedback.length });
   }
 
   if (p === '/api/config' && req.method === 'GET') return send(res, 200, tunedConfig || {});
+  if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, storage: storage.kind, ratings: feedback.length });
 
   if (p.startsWith('/api/admin/')) {
     if (!isAdmin(req)) return send(res, 401, { error: 'Admin token required' });
 
-    if (p === '/api/admin/feedback' && req.method === 'GET') return send(res, 200, { items: feedback, config: tunedConfig });
+    if (p === '/api/admin/feedback' && req.method === 'GET') return send(res, 200, { items: feedback, config: tunedConfig, storage: storage.describe });
 
     const del = /^\/api\/admin\/feedback\/([\w-]{1,64})$/.exec(p);
     if (del && req.method === 'DELETE') {
       const before = feedback.length;
       feedback = feedback.filter((f) => f.id !== del[1]);
       if (feedback.length === before) return send(res, 404, { error: 'Not found' });
-      await persist(FEEDBACK_FILE, feedback);
+      await persist('feedback', `Admin: delete rating ${del[1]}`);
       return send(res, 200, { ok: true });
     }
 
@@ -233,12 +248,12 @@ async function api(req, res, url) {
       const cfg = cleanConfig(await readBody(req));
       if (!cfg) return send(res, 400, { error: 'Need numeric weights for canvas, horizon, low, aod, moisture' });
       tunedConfig = cfg;
-      await persist(CONFIG_FILE, tunedConfig);
+      await persist('config', `Admin: apply weights ${tunedConfig.version}`);
       return send(res, 200, tunedConfig);
     }
     if (p === '/api/admin/config' && req.method === 'DELETE') {
       tunedConfig = null;
-      await fs.rm(CONFIG_FILE, { force: true });
+      await persist('config', 'Admin: reset weights to defaults');
       return send(res, 200, { ok: true });
     }
   }
@@ -289,6 +304,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   createServer().listen(PORT, () => {
     console.log(`Sky Score running on http://localhost:${PORT}`);
     console.log(`Admin: http://localhost:${PORT}/admin`);
+    console.log(`Ratings stored in ${storage.describe}`);
     if (!process.env.ADMIN_TOKEN) console.log(`ADMIN_TOKEN not set — generated one for this run: ${ADMIN_TOKEN}`);
   });
 }
