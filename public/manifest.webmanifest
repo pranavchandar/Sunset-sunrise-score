@@ -1,0 +1,10 @@
+{
+  "name": "Sky Score",
+  "short_name": "Sky Score",
+  "description": "Sunrise and sunset vibrancy forecast",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fbf8f5",
+  "theme_color": "#ef6f4f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
