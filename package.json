@@ -1,0 +1,15 @@
+{
+  "name": "sunset-sunrise-score",
+  "version": "1.0.0",
+  "description": "Predicts how vibrant the next sunrises and sunsets will be, with game-style reasoning and a feedback loop for tuning.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0"
+}

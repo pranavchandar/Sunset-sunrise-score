@@ -1,0 +1,22 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick this repo.
+# Free plan. Ratings are stored on the "sky-data" branch of the repo through the
+# GitHub API, because the free plan's disk is wiped on every restart.
+services:
+  - type: web
+    name: sky-score
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ADMIN_TOKEN        # password for /admin; Render generates one (see Environment tab)
+        generateValue: true
+      - key: GITHUB_TOKEN       # fine-grained token, Contents: read & write on this repo only
+        sync: false
+      - key: GITHUB_REPO
+        value: pranavchandar/Sunset-sunrise-score
+      - key: GITHUB_BRANCH      # must NOT be the branch Render deploys from
+        value: sky-data

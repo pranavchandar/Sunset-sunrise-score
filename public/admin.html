@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sky Score Admin</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body class="admin">
+  <header class="top">
+    <div class="top-row">
+      <a href="./" class="loc-btn" style="text-decoration:none">← Sky Score</a>
+      <div class="top-actions">
+        <button id="logoutBtn" class="btn" type="button" hidden>Sign out</button>
+      </div>
+    </div>
+    <h1 class="admin-title">Feedback &amp; training</h1>
+    <p id="storageInfo" class="muted small admin-sub"></p>
+  </header>
+
+  <main class="admin-main">
+    <form id="loginForm" class="card login" hidden>
+      <label class="field">
+        <span class="h3">Admin token</span>
+        <input id="tokenInput" type="password" autocomplete="current-password" required placeholder="ADMIN_TOKEN from the server">
+      </label>
+      <button class="btn btn-primary" type="submit">Open dashboard</button>
+      <p id="loginErr" class="muted small" role="alert"></p>
+    </form>
+
+    <div id="dash" hidden>
+      <section class="kpis" id="kpis" aria-label="Accuracy summary"></section>
+
+      <section class="viz-root grid2">
+        <figure class="card chart-card">
+          <figcaption><span class="h3">Predicted score vs. rating</span><span class="muted small">Each dot is one rating. The dashed line is a perfect forecast.</span></figcaption>
+          <div id="scatter" class="chart"></div>
+        </figure>
+        <figure class="card chart-card">
+          <figcaption><span class="h3">Ratings received</span><span class="muted small">Count by stars</span></figcaption>
+          <div id="bars" class="chart"></div>
+        </figure>
+      </section>
+
+      <section class="card">
+        <div class="row-head"><h2 class="h2">Calibration by label</h2><span class="muted small">Average stars people gave, per predicted label</span></div>
+        <div id="calib"></div>
+      </section>
+
+      <section class="card">
+        <div class="row-head"><h2 class="h2">Tune the model</h2><span id="weightsVersion" class="muted small"></span></div>
+        <p class="muted small">Suggested weights come from a ridge regression of ratings on the five component levels, pulled toward the current weights so a few ratings can't swing them wildly. Applying them changes live predictions for everyone.</p>
+        <div id="weights"></div>
+        <div class="actions">
+          <button id="applyBtn" class="btn btn-primary" type="button" disabled>Apply suggested weights</button>
+          <button id="resetBtn" class="btn" type="button">Reset to defaults</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row-head">
+          <h2 class="h2">All ratings</h2>
+          <div class="actions tight">
+            <select id="typeFilter" aria-label="Filter by event type"><option value="">All events</option><option value="sunrise">Sunrises</option><option value="sunset">Sunsets</option></select>
+            <button id="csvBtn" class="btn" type="button">Export CSV</button>
+            <button id="jsonBtn" class="btn" type="button">Export JSON</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table class="tbl" id="table"></table></div>
+      </section>
+    </div>
+  </main>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>
