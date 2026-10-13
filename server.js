@@ -50,11 +50,30 @@ const CSP = [
 
 let feedback = [];
 let tunedConfig = null;
+// Storage trouble (bad token, GitHub down) must not take the app down: predictions
+// don't need it. Until it works, saves answer 503 (the browser keeps the rating and
+// retries later) and we try to connect again at most once a minute.
+let storageError = null;
+let lastAttempt = 0;
 
 async function load() {
-  await storage.init();
-  feedback = (await storage.read('feedback')) || [];
-  tunedConfig = await storage.read('config');
+  lastAttempt = Date.now();
+  try {
+    await storage.init();
+    const [f, c] = [await storage.read('feedback'), await storage.read('config')];
+    feedback = f || [];
+    tunedConfig = c;
+    if (storageError) console.log(`Storage recovered: ${storage.describe}`);
+    storageError = null;
+  } catch (e) {
+    storageError = e.message;
+    console.error(`STORAGE NOT AVAILABLE, ratings can't be saved until this is fixed:\n  ${e.message}`);
+  }
+}
+
+async function storageReady() {
+  if (storageError && Date.now() - lastAttempt > (Number(process.env.STORAGE_RETRY_MS) || 60000)) await load();
+  return !storageError;
 }
 
 // Writes run one at a time. A write queued behind another for the same file
@@ -77,7 +96,7 @@ function persist(name, message) {
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : undefined);
 const fin = (v, lo = -1e9, hi = 1e9) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : undefined);
 const TAGS = new Set(['fiery', 'pastel', 'golden', 'pink', 'purple', 'grey', 'blocked', 'hazy', 'rainy', 'clear', 'better', 'worse']);
-const METRIC_KEYS = ['high', 'mid', 'low', 'total', 'HZ', 'aod', 'pm25', 'dust', 'rh', 'visibility', 'precip', 'rain12h', 'pressureTrend', 'elevationM', 'bearing'];
+const METRIC_KEYS = ['high', 'mid', 'low', 'total', 'HZ', 'aod', 'pm25', 'dust', 'rh', 'visibility', 'precip', 'rain12h', 'pressureTrend', 'elevationM', 'bearing', 'sunwardHM', 'antiCloud', 'cape'];
 const COMPONENT_KEYS = ['canvas', 'horizon', 'low', 'aod', 'moisture'];
 
 function cleanFeedback(b) {
@@ -206,6 +225,7 @@ async function api(req, res, url) {
     if (rateLimited(ip)) return send(res, 429, { error: 'Too many ratings, try later' });
     const item = cleanFeedback(await readBody(req));
     if (!item) return send(res, 400, { error: 'Invalid rating' });
+    if (!(await storageReady())) return send(res, 503, { error: 'Ratings storage is offline, will retry' });
     // One rating per person per event: a re-rate replaces the old one.
     const existing = feedback.findIndex((f) => f.clientId === item.clientId && f.eventId === item.eventId);
     const record = { id: existing >= 0 ? feedback[existing].id : crypto.randomUUID(), receivedAt: Date.now(), ...item };
@@ -224,12 +244,17 @@ async function api(req, res, url) {
   }
 
   if (p === '/api/config' && req.method === 'GET') return send(res, 200, tunedConfig || {});
-  if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, storage: storage.kind, ratings: feedback.length });
+  if (p === '/api/health' && req.method === 'GET') {
+    await storageReady();
+    return send(res, 200, { ok: true, storage: storage.kind, storageOk: !storageError, ratings: feedback.length });
+  }
 
   if (p.startsWith('/api/admin/')) {
     if (!isAdmin(req)) return send(res, 401, { error: 'Admin token required' });
+    const ready = await storageReady();
+    if (!ready && req.method !== 'GET') return send(res, 503, { error: `Storage unavailable: ${storageError}` });
 
-    if (p === '/api/admin/feedback' && req.method === 'GET') return send(res, 200, { items: feedback, config: tunedConfig, storage: storage.describe });
+    if (p === '/api/admin/feedback' && req.method === 'GET') return send(res, 200, { items: feedback, config: tunedConfig, storage: storage.describe, storageError });
 
     const del = /^\/api\/admin\/feedback\/([\w-]{1,64})$/.exec(p);
     if (del && req.method === 'DELETE') {
@@ -304,7 +329,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   createServer().listen(PORT, () => {
     console.log(`Sky Score running on http://localhost:${PORT}`);
     console.log(`Admin: http://localhost:${PORT}/admin`);
-    console.log(`Ratings stored in ${storage.describe}`);
+    console.log(storageError ? `Ratings storage (${storage.describe}) is OFFLINE, see the error above` : `Ratings stored in ${storage.describe}`);
     if (!process.env.ADMIN_TOKEN) console.log(`ADMIN_TOKEN not set — generated one for this run: ${ADMIN_TOKEN}`);
   });
 }

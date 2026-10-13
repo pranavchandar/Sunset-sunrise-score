@@ -22,6 +22,21 @@ export const DEFAULT_CONFIG = {
   },
 
   canvas: { rampUpTo: 30, plateauTo: 70 },        // % HM: 0 → 1 → 1 → 0 at 100
+
+  // Clouds that can light up don't have to be overhead. The canvas is the best of:
+  //   overhead     max(high, mid) above you
+  //   sunward      max(high, mid) 50–100 km toward the sun (the brightest part of the sky)
+  //   opposite     low/mid cloud 30–60 km away from the sun, catching the golden light
+  //                side-on; taller (convective) clouds make a better glowing wall.
+  canvasSources: {
+    sunwardSampleWeights: [0.6, 0.4], // the first horizon samples: 50 and 100 km
+    sunwardWeight: 0.6,     // a lit band near the sun: pretty, but less than a whole lit sky
+    antiDistancesKm: [30, 60],
+    antiSampleWeights: [0.6, 0.4],
+    antiWeight: 0.4,        // flat or modest cloud opposite the sun
+    antiVolumeBonus: 0.2,   // extra weight for towering cloud (CAPE)
+    capeFull: 1000,         // J/kg at which the volume bonus is fully earned
+  },
   horizon: {
     distancesKm: [50, 100, 200],
     sampleWeights: [0.4, 0.35, 0.25],
@@ -42,7 +57,8 @@ export const DEFAULT_CONFIG = {
     clearingBonus: 10,
     overcastTotal: 95,
     overcastCap: 15,
-    clearSkyHM: 5,
+    // Canvas limit: with little low cloud overhead, the score can't exceed
+    // 35 + 65 × canvas factor. No canvas anywhere → 35 (a plain gradient).
     clearSkyLow: 10,
     clearSkyCap: 35,
     // Observer altitude: a higher vantage sees a lower, longer-lit horizon and

@@ -8,7 +8,7 @@ const FORECAST = 'https://api.open-meteo.com/v1/forecast';
 const AIR = 'https://air-quality-api.open-meteo.com/v1/air-quality';
 const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
 
-const HOURLY = 'cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_cover,relative_humidity_2m,visibility,precipitation,pressure_msl';
+const HOURLY = 'cloud_cover_low,cloud_cover_mid,cloud_cover_high,cloud_cover,relative_humidity_2m,visibility,precipitation,pressure_msl,cape';
 const MIN = 60000;
 const HOUR = 3600000;
 
@@ -94,7 +94,8 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
   });
   raw.sort((a, b) => a.T - b.T);
 
-  // Horizon sample points. Sunrise/sunset azimuths drift < 2° over 4 days
+  // Sample points toward the sun (horizon + sunward canvas) and away from it
+  // (clouds that catch the glow). Sunrise/sunset azimuths drift < 2° over 4 days
   // (~7 km at 200 km — under a grid cell), so one set per event type keeps it
   // to a single batched request.
   const firstOf = (type) => raw.find((e) => e.type === type);
@@ -103,10 +104,10 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
     const e = firstOf(type);
     if (e) azimuths[type] = sunPosition(e.T, loc.lat, loc.lon).azimuth;
   }
-  const dists = config.horizon.distancesKm;
   const points = [];
   for (const [type, az] of Object.entries(azimuths)) {
-    dists.forEach((km) => points.push({ type, km, ...destinationPoint(loc.lat, loc.lon, az, km) }));
+    config.horizon.distancesKm.forEach((km) => points.push({ type, kind: 'sun', km, ...destinationPoint(loc.lat, loc.lon, az, km) }));
+    config.canvasSources.antiDistancesKm.forEach((km) => points.push({ type, kind: 'anti', km, ...destinationPoint(loc.lat, loc.lon, (az + 180) % 360, km) }));
   }
   let horizonData = null;
   let horizonError = null;
@@ -114,7 +115,7 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
     try {
       const lats = points.map((p) => p.lat.toFixed(4)).join(',');
       const lons = points.map((p) => p.lon.toFixed(4)).join(',');
-      const res = await getJSON(`${FORECAST}?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid&timezone=auto&forecast_days=4&past_days=1`, { signal });
+      const res = await getJSON(`${FORECAST}?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&timezone=auto&forecast_days=4&past_days=1`, { signal });
       horizonData = Array.isArray(res) ? res : [res];
     } catch (e) {
       horizonError = e.message;
@@ -146,12 +147,15 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
       ? h.pressure_msl[i] - h.pressure_msl[i - 3] : undefined;
 
     const ai = A ? A.nearest(H.ms[i]) : -1;
-    const samples = points.filter((p) => p.type === e.type).map((p) => {
+    const sampleAt = (kind) => points.filter((p) => p.type === e.type && p.kind === kind).map((p) => {
       if (!p.hours) return null;
       const j = p.hours.nearest(H.ms[i]);
-      return { km: p.km, lat: p.lat, lon: p.lon, low: at(p.hourly.cloud_cover_low, j), mid: at(p.hourly.cloud_cover_mid, j) };
+      return { km: p.km, lat: p.lat, lon: p.lon, low: at(p.hourly.cloud_cover_low, j), mid: at(p.hourly.cloud_cover_mid, j), high: at(p.hourly.cloud_cover_high, j) };
     });
+    const samples = sampleAt('sun');
+    const antiSamples = sampleAt('anti');
     const horizon = samples.every((s) => s && Number.isFinite(s.low)) ? samples : null;
+    const anti = antiSamples.every((s) => s && Number.isFinite(s.low)) ? antiSamples : null;
 
     const inputs = {
       type: e.type,
@@ -169,6 +173,8 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
       pm25: A ? at(air.hourly.pm2_5, ai) : undefined,
       dust: A ? at(air.hourly.dust, ai) : undefined,
       horizon,
+      anti,
+      cape: at(h.cape, i),
       elevationM,
     };
     const [p0, p1] = config.peak[e.type];
@@ -182,6 +188,7 @@ export async function loadForecast(loc, { config, observerHeightM = 0, gpsAltitu
       bearing,
       inputs,
       samples,
+      antiSamples,
       phases: lightPhases(e.type, e.T, loc.lat, loc.lon, Math.max(0, elevationM ?? 0)),
       result: scoreEvent(inputs, config),
     });

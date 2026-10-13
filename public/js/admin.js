@@ -52,7 +52,11 @@ async function refresh() {
     const data = await (await api('api/admin/feedback')).json();
     items = data.items.sort((a, b) => b.receivedAt - a.receivedAt);
     tuned = data.config;
-    $('#storageInfo').textContent = data.storage ? `Ratings are stored in ${data.storage}` : '';
+    const info = $('#storageInfo');
+    info.textContent = data.storageError
+      ? `⚠ Ratings can't be saved right now. ${data.storageError}`
+      : data.storage ? `Ratings are stored in ${data.storage}` : '';
+    info.classList.toggle('warn', !!data.storageError);
     $('#loginForm').hidden = true;
     $('#dash').hidden = false;
     $('#logoutBtn').hidden = false;

@@ -50,6 +50,41 @@ export function moistureFactor(rh, visibilityM, cfg = DEFAULT_CONFIG) {
   return Math.max(0, v);
 }
 
+// Largest of the values that exist (NaN if none do).
+function maxOf(...v) {
+  const f = v.filter(Number.isFinite);
+  return f.length ? Math.max(...f) : NaN;
+}
+
+// Weighted mean of a per-sample value over sample points, skipping missing ones.
+function sampleMean(samples, weights, pick) {
+  let sum = 0, wsum = 0;
+  (samples || []).forEach((s, i) => {
+    const v = s ? pick(s) : NaN;
+    if (!Number.isFinite(v)) return;
+    const w = weights[i] ?? 0;
+    sum += w * v;
+    wsum += w;
+  });
+  return wsum ? sum / wsum : null;
+}
+
+/** Best cloud canvas among overhead, toward the sun, and opposite the sun. */
+export function canvasSources(x, HM, cfg = DEFAULT_CONFIG) {
+  const c = cfg.canvasSources;
+  // The first sunward samples (50, 100 km) are where lit cloud sits low in the sky near the sun.
+  const sunward = sampleMean((x.horizon || []).slice(0, c.sunwardSampleWeights.length), c.sunwardSampleWeights, (s) => maxOf(s.high, s.mid));
+  const anti = sampleMean(x.anti, c.antiSampleWeights, (s) => maxOf(s.low, s.mid));
+  const volume = Number.isFinite(x.cape) ? clamp(x.cape / c.capeFull, 0, 1) : 0;
+  const options = {
+    overhead: canvasFactor(HM, cfg),
+    sunward: sunward === null ? 0 : c.sunwardWeight * canvasFactor(sunward, cfg),
+    anti: anti === null ? 0 : (c.antiWeight + c.antiVolumeBonus * volume) * canvasFactor(anti, cfg),
+  };
+  const [best, factor] = Object.entries(options).sort((a, b) => b[1] - a[1])[0];
+  return { factor, best: factor < 0.05 ? null : best, overhead: HM, sunward, anti, volume, options };
+}
+
 export function labelFor(score, cfg = DEFAULT_CONFIG) {
   return cfg.labels.find((l) => score >= l.min) ?? cfg.labels[cfg.labels.length - 1];
 }
@@ -57,7 +92,9 @@ export function labelFor(score, cfg = DEFAULT_CONFIG) {
 /**
  * @param {object} x
  *   high, mid, low, total      cloud cover % overhead at the peak hour
- *   horizon                    [{low, mid}] at 50/100/200 km toward the sun
+ *   horizon                    [{low, mid, high}] at 50/100/200 km toward the sun
+ *   anti                       [{low, mid, high}] at 30/60 km away from the sun (optional)
+ *   cape                       J/kg at the location (optional; how tall clouds can grow)
  *   aod, pm25, rh, visibility  air & moisture (visibility in m)
  *   precip                     mm at the peak hour
  *   rain12h                    mm in the 12 h before the peak hour
@@ -73,9 +110,10 @@ export function scoreEvent(x, cfg = DEFAULT_CONFIG) {
   const HZ = horizonCloud(x.horizon, cfg);
   const hzKnown = HZ !== null;
   const hz = hzKnown ? HZ : low; // fall back to overhead low cloud if the horizon fetch failed
+  const canvas = canvasSources(x, HM, cfg);
 
   const f = {
-    canvas: canvasFactor(HM, cfg),
+    canvas: canvas.factor,
     horizon: horizonFactor(hz, cfg),
     low: clamp(1 - low / 100, 0, 1),
     aod: aodFactor(x.aod, cfg),
@@ -84,7 +122,7 @@ export function scoreEvent(x, cfg = DEFAULT_CONFIG) {
   const gate = cfg.horizon.gatesCanvas ? f.horizon : 1;
 
   const components = {
-    canvas: { factor: f.canvas, max: W.canvas, points: W.canvas * f.canvas * gate, gate, input: HM },
+    canvas: { factor: f.canvas, max: W.canvas, points: W.canvas * f.canvas * gate, gate, input: HM, sources: canvas },
     horizon: { factor: f.horizon, max: W.horizon, points: W.horizon * f.horizon, input: hz, estimated: !hzKnown },
     low: { factor: f.low, max: W.low, points: W.low * f.low, input: low },
     aod: { factor: f.aod, max: W.aod, points: W.aod * f.aod, input: x.aod },
@@ -122,9 +160,17 @@ export function scoreEvent(x, cfg = DEFAULT_CONFIG) {
     score = M.overcastCap;
   }
 
-  if (HM < M.clearSkyHM && low < M.clearSkyLow && score > M.clearSkyCap) {
-    modifiers.push({ id: 'clearsky', kind: 'cap', name: 'Empty Canvas', effect: `max ${M.clearSkyCap}`, delta: M.clearSkyCap - score, detail: 'Clear sky: a soft gradient, but no clouds to set on fire' });
-    score = M.clearSkyCap;
+  // Without clouds to light (anywhere), clean air alone can't make a great sky.
+  const limit = Math.round(M.clearSkyCap + (100 - M.clearSkyCap) * f.canvas);
+  if (low < M.clearSkyLow && score > limit) {
+    const [name, detail] = {
+      null: ['Empty Canvas', 'Clear sky in every direction: a soft gradient, but no clouds to set on fire'],
+      overhead: ['Thin Canvas', 'Only a little cloud overhead to catch the light'],
+      sunward: ['Horizon Band', 'The color gathers in a band near the sun rather than across the whole sky'],
+      anti: ['Side Glow', 'The glow lights the clouds opposite the sun rather than the whole sky'],
+    }[canvas.best];
+    modifiers.push({ id: 'clearsky', kind: 'cap', name, effect: `max ${limit}`, delta: limit - score, detail });
+    score = limit;
   }
 
   score = Math.round(clamp(score, 0, 100));
@@ -143,7 +189,7 @@ export function scoreEvent(x, cfg = DEFAULT_CONFIG) {
 
   const result = {
     score, label: lab.label, rank: lab.rank, base: Math.round(base * 10) / 10,
-    HM, HZ: hz, components, modifiers, mvp: mvp.key, nemesis: nemesis.lost > 2 ? nemesis.key : null,
+    HM, HZ: hz, canvas, components, modifiers, mvp: mvp.key, nemesis: nemesis.lost > 2 ? nemesis.key : null,
     lost: Object.fromEntries(ranked.map((c) => [c.key, c.lost])),
   };
   result.reasons = explain(x, result, cfg);
@@ -161,10 +207,22 @@ export function explain(x, r, cfg = DEFAULT_CONFIG) {
   if (r.modifiers.some((m) => m.id === 'overcast')) push(95, `Overcast (${Math.round(num(x.total))}%) — the sky is sealed`, 'bad');
   if (r.modifiers.some((m) => m.id === 'clearing')) push(90, 'Rain clearing earlier — washed air, a classic setup', 'good');
 
-  if (HM >= cfg.canvas.rampUpTo && HM <= cfg.canvas.plateauTo) push(80, `Good amount of high/mid cloud to catch color (${HM}%)`, 'good');
-  else if (HM > cfg.canvas.plateauTo) push(60, `Thick high/mid cloud (${HM}%) — may be too dense to glow`, 'meh');
-  else if (HM >= 5) push(55, `Thin cloud canvas (${HM}%) — some color, not a full fire`, 'meh');
-  else push(70, 'Almost no high or mid cloud — expect a clean gradient', 'meh');
+  const c = r.canvas;
+  const away = Number.isFinite(x.bearing) ? `in the ${compassWord((x.bearing + 180) % 360)}` : 'opposite the sun';
+  if (c.best === 'overhead') {
+    if (HM >= cfg.canvas.rampUpTo && HM <= cfg.canvas.plateauTo) push(80, `Good amount of high/mid cloud overhead to catch color (${HM}%)`, 'good');
+    else if (HM > cfg.canvas.plateauTo) push(60, `Thick high/mid cloud (${HM}%) — may be too dense to glow`, 'meh');
+    else push(55, `Thin cloud canvas (${HM}%) — some color, not a full fire`, 'meh');
+  } else if (c.best === 'sunward') {
+    const v = Math.round(c.sunward);
+    push(80, v > cfg.canvas.plateauTo ? `Thick high cloud ${dir} (${v}%) — may be too dense to glow`
+      : `High/mid cloud ${dir} (${v}%) to catch the color, near the sun`, v > cfg.canvas.plateauTo ? 'meh' : 'good');
+  } else if (c.best === 'anti') {
+    const v = Math.round(c.anti);
+    push(78, `${c.volume >= 0.5 ? 'Towering clouds' : 'Clouds'} ${away} (${v}%) can catch a golden glow`, 'good');
+  } else {
+    push(70, 'Almost no cloud in any direction — expect a clean gradient', 'meh');
+  }
 
   if (HZ >= 60) push(85, `Clouds ${dir} (${HZ}%) may block the light`, 'bad');
   else if (HZ >= 30) push(50, `Some cloud ${dir} (${HZ}%) could dim the light`, 'meh');
@@ -186,7 +244,7 @@ export function explain(x, r, cfg = DEFAULT_CONFIG) {
 
 // Display metadata for each component — the "character stats".
 export const STAT_INFO = {
-  canvas: { name: 'Cloud Canvas', short: 'CNV', hint: 'High & mid clouds that catch the light. Best at 30–70%.' },
+  canvas: { name: 'Cloud Canvas', short: 'CNV', hint: 'Clouds that catch the light: overhead, near the sun, or a glowing wall opposite it. Best at 30–70%.' },
   horizon: { name: 'Light Path', short: 'PTH', hint: 'How clear the sky is 50–200 km toward the sun.' },
   low: { name: 'Open Sky', short: 'SKY', hint: 'Low cloud overhead blocks the show. Less is better.' },
   aod: { name: 'Air Clarity', short: 'AIR', hint: 'Aerosols: a little deepens reds; heavy haze dulls them.' },
