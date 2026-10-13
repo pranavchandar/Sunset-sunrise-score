@@ -86,18 +86,24 @@ The `public/` folder still works as a static site (for example, GitHub Pages) if
 
 | Component | Weight | Rule |
 |---|---|---|
-| Cloud Canvas (max of high and mid cloud overhead, HM) | 35 | 0 at 0%, ramps to 1 at 30%, stays at 1 up to 70%, falls to 0 at 100% |
+| Cloud Canvas (best of three places clouds can light up, see below) | 35 | 0 at 0%, ramps to 1 at 30%, stays at 1 up to 70%, falls to 0 at 100% |
 | Light Path (horizon cloud toward the sun, HZ) | 30 | `(1 − HZ/100)^1.5` |
 | Open Sky (low cloud overhead) | 15 | `1 − low/100` |
 | Air Clarity (aerosol optical depth, AOD) | 10 | 0.8 below 0.1; 1 from 0.1 to 0.3; falls to 0.3 at 0.6; 0.1 above 0.6 |
 | Dry Air (humidity and visibility) | 10 | −0.5 if RH > 85%; −0.5 if visibility < 5 km |
 
+- **Cloud Canvas** takes the best of three places:
+  - **Overhead:** max(high, mid).
+  - **Toward the sun:** max(high, mid) 50–100 km toward the sun, ×0.6. This is a lit band near the horizon, pretty but less than a whole lit sky.
+  - **Opposite the sun:** max(low, mid) 30–60 km away from the sun, ×0.4. This rises to ×0.6 for towering clouds, using the forecast's convective energy (CAPE, up to 1000 J/kg). These clouds catch the golden light side-on.
+
+  All three need light to get through: their points are scaled by the Light Path factor.
 - **HZ** is the weighted mean of `low + ½·mid` at 50, 100 and 200 km along the sun's azimuth, with weights 0.4, 0.35 and 0.25.
 - **Modifiers:**
   - Rain at peak: ×0.3.
   - Clearing storm: +10.
   - Total cloud above 95%: score capped at 15.
-  - Clear sky: score capped at 35.
+  - Canvas limit: with little low cloud overhead, the score is capped at 35 + 65 × canvas factor. A sky with no clouds anywhere is capped at 35 (Empty Canvas). Less canvas means a lower cap, shown as Thin Canvas, Horizon Band or Side Glow depending on where the clouds are.
   - High Ground (observer altitude 150–1500 m): up to +6.
 - **Departure from the handover spec.** Canvas points are multiplied by the Light Path factor, because sunlight has to cross the horizon before it can light the clouds overhead. Without this gate, "50% cirrus + 80% low cloud on the horizon" scores 73. The spec requires it to score below 45; with the gate it scores 41. Turn it off with `horizon.gatesCanvas` in `public/js/config.js`.
 

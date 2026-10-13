@@ -101,3 +101,49 @@ test('mergeConfig keeps a 100-point scale and ignores junk', () => {
   assert.equal(c.weights.evil, undefined);
   assert.deepEqual(mergeConfig(DEFAULT_CONFIG, null).weights, DEFAULT_CONFIG.weights);
 });
+
+// ---- canvas beyond overhead: toward the sun, and opposite it ----
+
+const clear3 = [{ low: 2, mid: 3, high: 25 }, { low: 2, mid: 3, high: 25 }, { low: 0, mid: 0, high: 10 }];
+
+test('13 Oct 2026, Perungudi: clear overhead, high cloud toward the sun → no longer capped at 35', () => {
+  // Real readings from the app (overhead 2% high/mid, horizon ~4%, AOD 0.34, RH 67%, 19 km);
+  // the photos showed lit cirrus/altocumulus in the western sky, about 3.5★.
+  const r = scoreEvent({ ...base, high: 0, mid: 2, low: 0, total: 30, horizon: clear3, aod: 0.34, rh: 67, visibility: 19000, bearing: 262 });
+  assert.ok(r.score >= 50 && r.score <= 80, `got ${r.score}`);
+  assert.equal(r.canvas.best, 'sunward');
+  assert.ok(!r.modifiers.some((m) => m.name === 'Empty Canvas'));
+  assert.ok(r.reasons.some((x) => /toward the west/.test(x.text) && x.tone === 'good'), JSON.stringify(r.reasons));
+});
+
+test('sunward canvas ranks below the same canvas overhead', () => {
+  const overhead = scoreEvent({ ...base, high: 50, total: 50, aod: 0.45, rh: 70 });
+  const sunward = scoreEvent({ ...base, total: 40, aod: 0.45, rh: 70, horizon: [{ low: 0, mid: 0, high: 50 }, { low: 0, mid: 0, high: 50 }, { low: 0, mid: 0, high: 0 }] });
+  assert.ok(sunward.score < overhead.score, `${sunward.score} vs ${overhead.score}`);
+  assert.ok(sunward.score > 35);
+});
+
+test('towering clouds opposite the sun catch the glow; taller is better; not "Epic" on their own', () => {
+  const wall = [{ low: 45, mid: 20, high: 0 }, { low: 40, mid: 20, high: 0 }];
+  const towering = scoreEvent({ ...base, total: 30, anti: wall, cape: 1500, bearing: 262 });
+  const flat = scoreEvent({ ...base, total: 30, anti: wall, cape: 0, bearing: 262 });
+  const nothing = scoreEvent({ ...base, total: 0, bearing: 262 });
+  assert.equal(towering.canvas.best, 'anti');
+  assert.ok(towering.score > flat.score && flat.score > nothing.score, `${towering.score} > ${flat.score} > ${nothing.score}`);
+  assert.ok(nothing.score <= 35);
+  assert.ok(towering.score < 80, `got ${towering.score}`);
+  assert.ok(towering.reasons.some((x) => /Towering clouds in the east/.test(x.text)), JSON.stringify(towering.reasons));
+});
+
+test('glow opposite the sun needs the light path to be open', () => {
+  const blocked = [{ low: 85, mid: 0 }, { low: 85, mid: 0 }, { low: 85, mid: 0 }];
+  const r = scoreEvent({ ...base, total: 60, horizon: blocked, anti: [{ low: 45, mid: 20 }, { low: 40, mid: 20 }], cape: 1500 });
+  assert.ok(r.score < 45, `got ${r.score}`);
+});
+
+test('a thin overhead canvas is limited, a full one is not', () => {
+  const thin = scoreEvent({ ...base, high: 8, total: 10 });
+  assert.equal(thin.modifiers.find((m) => m.id === 'clearsky')?.name, 'Thin Canvas');
+  assert.ok(thin.score > 35 && thin.score < 65, `got ${thin.score}`);
+  assert.ok(!scoreEvent({ ...base, high: 50, total: 50 }).modifiers.some((m) => m.id === 'clearsky'));
+});

@@ -168,8 +168,8 @@ function rememberScores() {
 }
 
 function logHorizonPoints() {
-  const pts = state.data.points.map((p) => `${p.type} ${p.km} km → ${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`);
-  console.info('[sky-score] horizon sample points\n' + pts.join('\n'));
+  const pts = state.data.points.map((p) => `${p.type} ${p.kind === 'anti' ? 'opposite' : 'toward sun'} ${p.km} km → ${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`);
+  console.info('[sky-score] sample points\n' + pts.join('\n'));
 }
 
 // ---------------------------------------------------------------- render
@@ -311,7 +311,12 @@ function renderHero(ev) {
 function statInputText(key, ev) {
   const x = ev.inputs, r = ev.result;
   switch (key) {
-    case 'canvas': return `${Math.round(r.HM)}% high/mid`;
+    case 'canvas': {
+      const c = r.canvas;
+      const part = (label, v, key) => (v === null || v === undefined ? null : `${c.best === key ? '★ ' : ''}${label} ${Math.round(v)}%`);
+      return [part('overhead', c.overhead, 'overhead'), part(`toward ${compassName(ev.bearing)}`, c.sunward, 'sunward'),
+        part(`opposite ${compassName((ev.bearing + 180) % 360)}`, c.anti, 'anti')].filter(Boolean).join(' · ');
+    }
     case 'horizon': return `${Math.round(r.HZ)}% cloud ${compassName(ev.bearing)}${r.components.horizon.estimated ? ' (est.)' : ''}`;
     case 'low': return `${fmt(x.low)}% low cloud`;
     case 'aod': return Number.isFinite(x.aod) ? `AOD ${x.aod.toFixed(2)}` : 'AOD n/a';
@@ -345,6 +350,9 @@ function modChip(m) {
 function tipFor(ev) {
   const s = ev.result.score;
   const rise = ev.type === 'sunrise';
+  const best = ev.result.canvas.best;
+  if (s >= 45 && best === 'anti') return `Turn your back to the ${rise ? 'sunrise' : 'sunset'}: the clouds in the ${compassName((ev.bearing + 180) % 360)} should glow gold and pink. Expose for the bright cloud tops.`;
+  if (s >= 45 && best === 'sunward') return `Keep the ${compassName(ev.bearing)} horizon in frame. The color gathers in the clouds near the sun, so a zoomed-in shot of that band works well.`;
   if (s >= 65) return rise
     ? 'Arrive 30 min early: the best color comes before the sun clears the horizon. Shoot wide to catch the lit cloud overhead.'
     : "Don't leave at sunset. The afterglow often peaks 10–20 min later. Shoot wide and underexpose about 1 stop to keep the reds.";
@@ -366,8 +374,10 @@ function localNote(ev) {
 function radar(ev) {
   const S = 250, cx = S / 2, cy = S / 2, R = 86, maxKm = 200;
   const rad = Math.PI / 180;
-  const pos = (bearing, km) => [cx + (R * km / maxKm) * Math.sin(bearing * rad), cy - (R * km / maxKm) * Math.cos(bearing * rad)];
-  const [sx, sy] = pos(ev.bearing, maxKm * 1.32);
+  // Square-root radial scale: spreads the nearby points (30–100 km) without losing the 200 km ring.
+  const rr = (km) => R * Math.sqrt(km / maxKm);
+  const pos = (bearing, km) => [cx + rr(km) * Math.sin(bearing * rad), cy - rr(km) * Math.cos(bearing * rad)];
+  const [sx, sy] = pos(ev.bearing, maxKm * 1.74);
   const [ex, ey] = pos(ev.bearing, maxKm);
   const cfg = state.config.horizon;
   const dots = (ev.samples || []).map((s, i) => {
@@ -377,22 +387,33 @@ function radar(ev) {
     return `<g><circle cx="${x}" cy="${y}" r="${7 + hz / 12}" class="radar-cloud" style="--o:${(0.15 + hz / 120).toFixed(2)}"><title>${cfg.distancesKm[i]} km: ${Math.round(hz)}% blocking cloud</title></circle>
       <text x="${x}" y="${y + 3.5}" class="radar-val">${Math.round(hz)}</text></g>`;
   }).join('');
-  const rings = [50, 100, 200].map((km) => `<circle cx="${cx}" cy="${cy}" r="${R * km / maxKm}" class="radar-ring"/><text x="${cx + 3}" y="${cy - R * km / maxKm + 10}" class="radar-km">${km}</text>`).join('');
+  // Clouds opposite the sun that can catch the glow (max of low/mid).
+  const anti = (ev.antiSamples || []).map((s, i) => {
+    if (!s || !Number.isFinite(s.low)) return '';
+    const v = Math.max(s.low, s.mid || 0);
+    const km = state.config.canvasSources.antiDistancesKm[i];
+    const [x, y] = pos((ev.bearing + 180) % 360, km);
+    return `<g><circle cx="${x}" cy="${y}" r="${5 + v / 18}" class="radar-glow" style="--o:${(0.15 + v / 130).toFixed(2)}"><title>${km} km opposite the sun: ${Math.round(v)}% cloud to catch the glow</title></circle>
+      <text x="${x}" y="${y + 3.5}" class="radar-val">${Math.round(v)}</text></g>`;
+  }).join('');
+  const [ax, ay] = pos((ev.bearing + 180) % 360, 80);
+  const rings = [50, 100, 200].map((km) => `<circle cx="${cx}" cy="${cy}" r="${rr(km)}" class="radar-ring"/><text x="${cx + 3}" y="${cy - rr(km) + 10}" class="radar-km">${km}</text>`).join('');
   const cards = [['N', 0], ['E', 90], ['S', 180], ['W', 270]].map(([l, b]) => {
     // Skip the cardinal letter the sun would sit on.
     if (Math.abs(((ev.bearing - b + 540) % 360) - 180) < 14) return '';
-    const [x, y] = pos(b, maxKm * 1.16);
+    const [x, y] = pos(b, maxKm * 1.36);
     return `<text x="${x}" y="${y + 4}" class="radar-card">${l}</text>`;
   }).join('');
   return `<figure class="radar">
-    <svg viewBox="0 0 ${S} ${S}" role="img" aria-label="Horizon scan toward ${compassName(ev.bearing)}: cloud blocking the light at 50, 100 and 200 km">
+    <svg viewBox="0 0 ${S} ${S}" role="img" aria-label="Sky scan: cloud blocking the light toward ${compassName(ev.bearing)} at 50, 100 and 200 km, and cloud to catch the glow opposite the sun">
       ${rings}${cards}
       <line x1="${cx}" y1="${cy}" x2="${ex}" y2="${ey}" class="radar-beam"/>
-      ${dots}
+      <line x1="${cx}" y1="${cy}" x2="${ax}" y2="${ay}" class="radar-beam anti"/>
+      ${dots}${anti}
       <circle cx="${cx}" cy="${cy}" r="${4 + ev.result.HM / 14}" class="radar-home"><title>Overhead canvas: ${Math.round(ev.result.HM)}% high/mid</title></circle>
       <circle cx="${sx}" cy="${sy}" r="9" class="radar-sun"/>
     </svg>
-    <figcaption class="muted small">Horizon scan: blocking cloud (low + ½ mid, %) along the sun's line. Smaller numbers = clearer path.</figcaption>
+    <figcaption class="muted small">Grey: cloud blocking the light toward the sun (smaller is better). Gold: cloud opposite the sun that can catch the glow.</figcaption>
   </figure>`;
 }
 
@@ -401,6 +422,8 @@ function rawMetrics(ev) {
   const rows = [
     ['High cloud', fmt(x.high, 0, '%')], ['Mid cloud', fmt(x.mid, 0, '%')], ['Low cloud', fmt(x.low, 0, '%')], ['Total cloud', fmt(x.total, 0, '%')],
     ['Horizon cloud (HZ)', `${fmt(r.HZ, 0, '%')}${r.components.horizon.estimated ? ' est.' : ''}`],
+    ['High/mid toward sun', fmt(r.canvas.sunward ?? NaN, 0, '%')], ['Cloud opposite sun', fmt(r.canvas.anti ?? NaN, 0, '%')],
+    ['CAPE (cloud height)', fmt(x.cape, 0, ' J/kg')],
     ['AOD', fmt(x.aod, 2)], ['PM2.5', fmt(x.pm25, 0, ' µg/m³')], ['Dust', fmt(x.dust, 0, ' µg/m³')],
     ['Humidity', fmt(x.rh, 0, '%')], ['Visibility', Number.isFinite(x.visibility) ? `${(x.visibility / 1000).toFixed(1)} km` : '—'],
     ['Rain at peak', fmt(x.precip, 1, ' mm')], ['Rain, last 12 h', fmt(x.rain12h, 1, ' mm')], ['Pressure, 3 h trend', Number.isFinite(x.pressureTrend) ? `${x.pressureTrend > 0 ? '+' : ''}${x.pressureTrend.toFixed(1)} hPa` : '—'],
@@ -653,6 +676,7 @@ $('#rateForm').addEventListener('submit', async (e) => {
       high: ev.inputs.high, mid: ev.inputs.mid, low: ev.inputs.low, total: ev.inputs.total, HZ: r.HZ,
       aod: ev.inputs.aod, pm25: ev.inputs.pm25, dust: ev.inputs.dust, rh: ev.inputs.rh, visibility: ev.inputs.visibility,
       precip: ev.inputs.precip, rain12h: ev.inputs.rain12h, pressureTrend: ev.inputs.pressureTrend, elevationM: ev.inputs.elevationM, bearing: ev.bearing,
+      sunwardHM: r.canvas.sunward ?? undefined, antiCloud: r.canvas.anti ?? undefined, cape: ev.inputs.cape,
     },
     leadHours: (ev.T - (state.data?.fetchedAt || Date.now())) / HOUR,
   };

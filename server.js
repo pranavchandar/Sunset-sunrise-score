@@ -96,7 +96,7 @@ function persist(name, message) {
 const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : undefined);
 const fin = (v, lo = -1e9, hi = 1e9) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : undefined);
 const TAGS = new Set(['fiery', 'pastel', 'golden', 'pink', 'purple', 'grey', 'blocked', 'hazy', 'rainy', 'clear', 'better', 'worse']);
-const METRIC_KEYS = ['high', 'mid', 'low', 'total', 'HZ', 'aod', 'pm25', 'dust', 'rh', 'visibility', 'precip', 'rain12h', 'pressureTrend', 'elevationM', 'bearing'];
+const METRIC_KEYS = ['high', 'mid', 'low', 'total', 'HZ', 'aod', 'pm25', 'dust', 'rh', 'visibility', 'precip', 'rain12h', 'pressureTrend', 'elevationM', 'bearing', 'sunwardHM', 'antiCloud', 'cape'];
 const COMPONENT_KEYS = ['canvas', 'horizon', 'low', 'aod', 'moisture'];
 
 function cleanFeedback(b) {
